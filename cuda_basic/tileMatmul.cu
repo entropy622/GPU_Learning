@@ -29,27 +29,24 @@ __global__ void matMulTile(const float* A, const float* B, float* C,
     __shared__ float tileA[TILE_SIZE][TILE_SIZE];
     __shared__ float tileB[TILE_SIZE][TILE_SIZE];
 
-    
-    if (row >= M || col >= N) {
-        return;
-    }
-
     float sum = 0.0f;
     for (int t = 0; t < (K + TILE_SIZE - 1) / TILE_SIZE; t++) {
-        int colA = t * blockDim.x + threadIdx.x;
-        int rowB = t * blockDim.y + threadIdx.y;
-        if (colA >= K || rowB >= K)
-        {
-            
+        int colA = t * TILE_SIZE + threadIdx.x;
+        int rowB = t * TILE_SIZE + threadIdx.y;
+
+        if (row < M && colA < K) {
+            tileA[threadIdx.y][threadIdx.x] = A[row * K + colA];
+        } else {
+            tileA[threadIdx.y][threadIdx.x] = 0.0f;
         }
-        
-        tileA[threadIdx.y][threadIdx.x] =
-            A[(blockIdx.y * blockDim.y + threadIdx.y) * K + colA];
-        tileB[threadIdx.y][threadIdx.x] =
-            B[(rowB) * N + blockIdx.x * blockDim.x + threadIdx.x];
+
+        if (rowB < K && col < N) {
+            tileB[threadIdx.y][threadIdx.x] = B[rowB * N + col];
+        } else {
+            tileB[threadIdx.y][threadIdx.x] = 0.0f;
+        }
 
         __syncthreads(); 
-        
 
         for (int i = 0; i < TILE_SIZE; i++) {
             sum += tileA[threadIdx.y][i] * tileB[i][threadIdx.x];
@@ -58,7 +55,9 @@ __global__ void matMulTile(const float* A, const float* B, float* C,
         __syncthreads();
     }
 
-    C[row * N + col] = sum;
+    if (row < M && col < N) {
+        C[row * N + col] = sum;
+    }
 }
 
 void checkCuda(cudaError_t result, const char* step) {
@@ -82,7 +81,8 @@ bool runSmallCorrectnessCheck() {
         11, 12
     };
 
-    std::vector<float> C(M * N, 0.0f);
+    std::vector<float> CNaive(M * N, 0.0f);
+    std::vector<float> CTile(M * N, 0.0f);
     std::vector<float> expected = {58, 64, 139, 154};
 
     float *d_A = nullptr, *d_B = nullptr, *d_C = nullptr;
@@ -100,8 +100,12 @@ bool runSmallCorrectnessCheck() {
     dim3 block(16, 16);
     dim3 grid((N + block.x - 1) / block.x, (M + block.y - 1) / block.y);
     matMulNaive<<<grid, block>>>(d_A, d_B, d_C, M, K, N);
-    checkCuda(cudaGetLastError(), "kernel launch");
-    checkCuda(cudaMemcpy(C.data(), d_C, bytesC, cudaMemcpyDeviceToHost), "copy C");
+    checkCuda(cudaGetLastError(), "naive launch");
+    checkCuda(cudaMemcpy(CNaive.data(), d_C, bytesC, cudaMemcpyDeviceToHost), "copy naive C");
+
+    matMulTile<<<grid, block>>>(d_A, d_B, d_C, M, K, N);
+    checkCuda(cudaGetLastError(), "tile launch");
+    checkCuda(cudaMemcpy(CTile.data(), d_C, bytesC, cudaMemcpyDeviceToHost), "copy tile C");
 
     cudaFree(d_A);
     cudaFree(d_B);
@@ -109,17 +113,19 @@ bool runSmallCorrectnessCheck() {
 
     bool ok = true;
     for (int i = 0; i < M * N; i++) {
-        if (std::fabs(C[i] - expected[i]) > 1e-5f) {
+        bool naiveOk = std::fabs(CNaive[i] - expected[i]) <= 1e-5f;
+        bool tileOk = std::fabs(CTile[i] - expected[i]) <= 1e-5f;
+        if (!naiveOk || !tileOk) {
             ok = false;
             break;
         }
     }
 
-    std::cout << "Small correctness check: " << (ok ? "PASS" : "FAIL") << "\n";
+    std::cout << "Small correctness check (naive + tile): " << (ok ? "PASS" : "FAIL") << "\n";
     if (ok) {
         for (int i = 0; i < M; i++) {
             for (int j = 0; j < N; j++) {
-                std::cout << C[i * N + j] << " ";
+                std::cout << CTile[i * N + j] << " ";
             }
             std::cout << "\n";
         }
@@ -127,6 +133,58 @@ bool runSmallCorrectnessCheck() {
     std::cout << "\n";
 
     return ok;
+}
+
+float benchmarkNaive(const float* d_A, const float* d_B, float* d_C,
+                     int M, int K, int N, dim3 grid, dim3 block, int repeats) {
+    cudaEvent_t start, stop;
+    checkCuda(cudaEventCreate(&start), "create start event");
+    checkCuda(cudaEventCreate(&stop), "create stop event");
+
+    matMulNaive<<<grid, block>>>(d_A, d_B, d_C, M, K, N);
+    checkCuda(cudaGetLastError(), "naive warmup launch");
+    checkCuda(cudaDeviceSynchronize(), "warmup sync");
+
+    checkCuda(cudaEventRecord(start), "record start");
+    for (int i = 0; i < repeats; i++) {
+        matMulNaive<<<grid, block>>>(d_A, d_B, d_C, M, K, N);
+    }
+    checkCuda(cudaGetLastError(), "naive launch");
+    checkCuda(cudaEventRecord(stop), "record stop");
+    checkCuda(cudaEventSynchronize(stop), "sync stop");
+
+    float totalMs = 0.0f;
+    checkCuda(cudaEventElapsedTime(&totalMs, start, stop), "elapsed time");
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+    return totalMs / repeats;
+}
+
+float benchmarkTile(const float* d_A, const float* d_B, float* d_C,
+                    int M, int K, int N, dim3 grid, dim3 block, int repeats) {
+    cudaEvent_t start, stop;
+    checkCuda(cudaEventCreate(&start), "create start event");
+    checkCuda(cudaEventCreate(&stop), "create stop event");
+
+    matMulTile<<<grid, block>>>(d_A, d_B, d_C, M, K, N);
+    checkCuda(cudaGetLastError(), "tile warmup launch");
+    checkCuda(cudaDeviceSynchronize(), "warmup sync");
+
+    checkCuda(cudaEventRecord(start), "record start");
+    for (int i = 0; i < repeats; i++) {
+        matMulTile<<<grid, block>>>(d_A, d_B, d_C, M, K, N);
+    }
+    checkCuda(cudaGetLastError(), "tile launch");
+    checkCuda(cudaEventRecord(stop), "record stop");
+    checkCuda(cudaEventSynchronize(stop), "sync stop");
+
+    float totalMs = 0.0f;
+    checkCuda(cudaEventElapsedTime(&totalMs, start, stop), "elapsed time");
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+    return totalMs / repeats;
 }
 
 void runBenchmark(int n, int repeats) {
@@ -157,33 +215,22 @@ void runBenchmark(int n, int repeats) {
     dim3 block(16, 16);
     dim3 grid((N + block.x - 1) / block.x, (M + block.y - 1) / block.y);
 
-    cudaEvent_t start, stop;
-    checkCuda(cudaEventCreate(&start), "create start event");
-    checkCuda(cudaEventCreate(&stop), "create stop event");
+    float naiveMs = benchmarkNaive(d_A, d_B, d_C, M, K, N, grid, block, repeats);
+    float tileMs = benchmarkTile(d_A, d_B, d_C, M, K, N, grid, block, repeats);
 
-    matMulNaive<<<grid, block>>>(d_A, d_B, d_C, M, K, N);
-    checkCuda(cudaGetLastError(), "warmup launch");
-    checkCuda(cudaDeviceSynchronize(), "warmup sync");
-
-    checkCuda(cudaEventRecord(start), "record start");
-    for (int i = 0; i < repeats; i++) {
-        matMulNaive<<<grid, block>>>(d_A, d_B, d_C, M, K, N);
-    }
-    checkCuda(cudaEventRecord(stop), "record stop");
-    checkCuda(cudaEventSynchronize(stop), "sync stop");
-
-    float totalMs = 0.0f;
-    checkCuda(cudaEventElapsedTime(&totalMs, start, stop), "elapsed time");
-    float avgMs = totalMs / repeats;
-    double gflops = (2.0 * M * N * K) / (avgMs * 1e6);
+    double ops = 2.0 * M * N * K;
+    double naiveGflops = ops / (naiveMs * 1e6);
+    double tileGflops = ops / (tileMs * 1e6);
+    double speedup = naiveMs / tileMs;
 
     std::cout << "N=" << std::setw(4) << n
-              << "  avg kernel time=" << std::fixed << std::setprecision(3) << avgMs << " ms"
-              << "  throughput=" << std::setprecision(2) << gflops << " GFLOP/s"
+              << "  naive=" << std::fixed << std::setprecision(3) << naiveMs << " ms"
+              << " (" << std::setprecision(2) << naiveGflops << " GFLOP/s)"
+              << "  tile=" << std::setprecision(3) << tileMs << " ms"
+              << " (" << std::setprecision(2) << tileGflops << " GFLOP/s)"
+              << "  speedup=" << std::setprecision(2) << speedup << "x"
               << "  repeats=" << repeats << "\n";
 
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
     cudaFree(d_A);
     cudaFree(d_B);
     cudaFree(d_C);
@@ -194,11 +241,14 @@ int main() {
         return 1;
     }
 
-    std::cout << "Naive matmul benchmark (square matrices)\n";
+    std::cout << "Naive vs tile matmul benchmark (square matrices)\n";
     runBenchmark(128, 20);
     runBenchmark(256, 20);
     runBenchmark(512, 10);
     runBenchmark(1024, 5);
+    runBenchmark(1536, 3);
+    runBenchmark(2048, 3);
+    runBenchmark(3072, 2);
 
     return 0;
 }
