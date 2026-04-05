@@ -247,8 +247,6 @@ int main() {
     runBenchmark(512, 10);
     runBenchmark(1024, 5);
     runBenchmark(1536, 3);
-    runBenchmark(2048, 3);
-    runBenchmark(3072, 2);
 
     return 0;
 }
