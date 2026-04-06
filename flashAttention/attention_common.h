@@ -10,6 +10,8 @@ struct AttentionConfig {
     int valueDim = 64;
     int threadsPerBlock = 128;
     int profileRepeats = 50;
+    int queryTileRows = 16;
+    int keyTileCols = 16;
 
     float scale() const {
         return 1.0f / std::sqrt(static_cast<float>(headDim));
