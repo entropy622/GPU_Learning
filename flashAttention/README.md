@@ -2,7 +2,11 @@
 
 This directory contains a teaching-oriented baseline for cross-attention:
 
-- `crossAttention.cu`: CPU reference + simple CUDA cross-attention kernel
+- `main.cpp`: app entry
+- `cpu_cross_attention.*`: CPU reference implementation
+- `cuda_cross_attention.*`: CUDA kernel + device runner
+- `attention_common.h`: shared config/data structures
+- `attention_utils.*`: initialization, validation, reporting
 - built-in CUDA event profiling
 - correctness check against the CPU output
 
@@ -10,8 +14,14 @@ Build from a VS developer command prompt:
 
 ```cmd
 cd /d C:\Users\Aentro\Desktop\Projects\github\GPU_Learning
-nvcc .\flashAttention\crossAttention.cu -o .\flashAttention\crossAttention.exe -std=c++17
+.\flashAttention\build.bat
 .\flashAttention\crossAttention.exe
+```
+
+Or compile directly with one command:
+
+```cmd
+nvcc .\flashAttention\main.cpp .\flashAttention\attention_utils.cpp .\flashAttention\cpu_cross_attention.cpp .\flashAttention\cuda_cross_attention.cu -o .\flashAttention\crossAttention.exe -std=c++17
 ```
 
 Current implementation is intentionally basic:
