@@ -104,13 +104,13 @@ __global__ void blockwiseAttentionSkeletonKernel(const float* q,
         }
 
         float newMax = fmaxf(runningMax, tileMax);
-        float oldScale = (runningSum == 0.0f) ? 0.0f : (runningSum * exp(runningMax - newMax));
+        float oldScale = (runningSum == 0.0f) ? 0.0f : expf(runningMax - newMax);
         float tileExpSum = 0.0f;
         for (int tileCol = 0; tileCol < tileCols; ++tileCol) {
-            localScores[tileCol] = exp(localScores[tileCol] - newMax);
+            localScores[tileCol] = expf(localScores[tileCol] - newMax);
             tileExpSum += localScores[tileCol];
         }
-        runningSum = runningSum * exp(runningMax - newMax) + tileExpSum;
+        runningSum = runningSum * oldScale + tileExpSum;
         runningMax = newMax;
 
         for (int dim = 0; dim < valueDim; ++dim) {

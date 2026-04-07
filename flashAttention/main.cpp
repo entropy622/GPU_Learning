@@ -23,20 +23,31 @@ public:
         DeviceAttentionBuffers deviceBuffers(config_);
         deviceBuffers.copyInputsFromHost(tensors_);
 
-        ProfileResult profile = gpuRunner_.runAndProfile(deviceBuffers);
+        ProfileResult naiveProfile = gpuRunner_.runAndProfile(deviceBuffers);
         deviceBuffers.copyOutputToHost(tensors_.gpuOut);
 
-        bool ok = AttentionValidator::compare(tensors_.cpuOut, tensors_.gpuOut);
+        bool naiveOk = AttentionValidator::compare(tensors_.cpuOut, tensors_.gpuOut);
+        std::cout << "Naive CUDA result\n";
         AttentionReporter::printPreview(tensors_.gpuOut, config_);
-        AttentionReporter::printSummary(config_, profile, ok);
+        AttentionReporter::printSummary(config_, naiveProfile, naiveOk);
 
-        ProfileResult skeletonProfile = blockwiseSkeleton_.runAndProfileSkeleton(deviceBuffers);
-        std::cout << "Blockwise skeleton summary:\n";
+        ProfileResult blockwiseProfile = blockwiseSkeleton_.runAndProfileSkeleton(deviceBuffers);
+        deviceBuffers.copyOutputToHost(tensors_.gpuOut);
+        bool blockwiseOk = AttentionValidator::compare(tensors_.cpuOut, tensors_.gpuOut);
+
+        std::cout << "Blockwise result\n";
+        AttentionReporter::printPreview(tensors_.gpuOut, config_);
+        std::cout << "Blockwise summary:\n";
         std::cout << "  queryTileRows=" << config_.queryTileRows
                   << " keyTileCols=" << config_.keyTileCols << "\n";
+        std::cout << "  correctness=" << (blockwiseOk ? "PASS" : "FAIL") << "\n";
         std::cout << "  avg kernel time=" << std::fixed << std::setprecision(4)
-                  << skeletonProfile.avgKernelMs << " ms\n";
-        return ok ? 0 : 1;
+                  << blockwiseProfile.avgKernelMs << " ms\n";
+        if (blockwiseProfile.avgKernelMs > 0.0f) {
+            std::cout << "  speedup vs naive=" << std::setprecision(2)
+                      << naiveProfile.avgKernelMs / blockwiseProfile.avgKernelMs << "x\n";
+        }
+        return (naiveOk && blockwiseOk) ? 0 : 1;
     }
 
 private:
