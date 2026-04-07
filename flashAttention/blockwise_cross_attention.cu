@@ -2,6 +2,18 @@
 
 namespace {
 
+// Teaching skeleton for a FlashAttention-like kernel.
+//
+// What this file already establishes:
+// - one block owns one tile of query rows
+// - the kernel scans K/V in tiles
+// - each K/V tile is staged in shared memory
+// - tile loading is cooperative across the whole block
+//
+// What is still missing:
+// - tile-local score computation that feeds real attention math
+// - online softmax state update
+// - output accumulation with V tiles
 __global__ void blockwiseAttentionSkeletonKernel(const float* q,
                                                  const float* k,
                                                  const float* v,
@@ -13,24 +25,34 @@ __global__ void blockwiseAttentionSkeletonKernel(const float* q,
                                                  int queryTileRows,
                                                  int keyTileCols,
                                                  float scale) {
+    // Current simple mapping:
+    // one thread handles one query row inside the current query tile.
     int localQueryRow = threadIdx.x;
     int queryTileStart = blockIdx.x * queryTileRows;
     int queryIdx = queryTileStart + localQueryRow;
 
+    // Guard against partial tiles at the tail.
     if (localQueryRow >= queryTileRows || queryIdx >= queryLen) {
         return;
     }
 
+    // Shared memory layout for the current K/V tiles:
+    // keyTile   = [keyTileCols][headDim]
+    // valueTile = [keyTileCols][valueDim]
     extern __shared__ float shared[];
-    float* keyTile = shared;                                   // [keyTileCols * headDim]
-    float* valueTile = keyTile + keyTileCols * headDim;        // [keyTileCols * valueDim]
+    float* keyTile = shared;
+    float* valueTile = keyTile + keyTileCols * headDim;
 
-    // Stage 1: iterate through K/V tiles.
+    // Scan the full K/V sequence tile by tile.
     for (int keyTileStart = 0; keyTileStart < keyLen; keyTileStart += keyTileCols) {
+        // Last tile may be smaller than keyTileCols.
         int tileCols = min(keyTileCols, keyLen - keyTileStart);
 
-        // Step 1: cooperatively load a K tile and a V tile into shared memory.
-        // We flatten each tile and let the block cover it in a strided pattern.
+        // Step 1: cooperative load for K tile.
+        //
+        // Flatten [tileCols][headDim] into a 1D range and let the block
+        // cover it with a strided loop:
+        //   linear = threadIdx.x, threadIdx.x + blockDim.x, ...
         int keyTileElements = tileCols * headDim;
         for (int linear = threadIdx.x; linear < keyTileElements; linear += blockDim.x) {
             int tileCol = linear / headDim;
@@ -38,6 +60,7 @@ __global__ void blockwiseAttentionSkeletonKernel(const float* q,
             keyTile[linear] = k[(keyTileStart + tileCol) * headDim + dim];
         }
 
+        // Step 1: cooperative load for V tile.
         int valueTileElements = tileCols * valueDim;
         for (int linear = threadIdx.x; linear < valueTileElements; linear += blockDim.x) {
             int tileCol = linear / valueDim;
@@ -45,15 +68,14 @@ __global__ void blockwiseAttentionSkeletonKernel(const float* q,
             valueTile[linear] = v[(keyTileStart + tileCol) * valueDim + dim];
         }
 
-
+        // Wait until the full K/V tile is visible to the whole block.
         __syncthreads();
 
-        // TODO(step 2): compute q * k_tile^T for this query row.
-        // TODO(step 3): update running row max / row sum for online softmax.
-        // TODO(step 4): update output accumulation against valueTile.
+        // Step 2 placeholder:
+        // consume the loaded keyTile so we can verify the staged data path.
         //
-        // For now we only touch the loaded data so this file stays compileable and gives
-        // us a concrete place to implement the algorithm step by step.
+        // This is not real attention output. It is only a deterministic
+        // placeholder while we build the blockwise algorithm step by step.
         float debugAccumulator = 0.0f;
         for (int tileCol = 0; tileCol < tileCols; ++tileCol) {
             float score = 0.0f;
@@ -63,7 +85,7 @@ __global__ void blockwiseAttentionSkeletonKernel(const float* q,
             debugAccumulator += score * scale;
         }
 
-        // Keep writes deterministic so the skeleton can be profiled if needed.
+        // Temporary writeback so the skeleton has a stable output buffer.
         if (keyTileStart == 0) {
             for (int dim = 0; dim < valueDim; ++dim) {
                 out[queryIdx * valueDim + dim] = 0.0f;
@@ -73,6 +95,8 @@ __global__ void blockwiseAttentionSkeletonKernel(const float* q,
             }
         }
 
+        // Wait until every thread is done reading the current tile before
+        // the next iteration overwrites shared memory.
         __syncthreads();
     }
 }
@@ -82,8 +106,12 @@ __global__ void blockwiseAttentionSkeletonKernel(const float* q,
 BlockwiseCrossAttentionRunner::BlockwiseCrossAttentionRunner(AttentionConfig config) : config_(config) {}
 
 ProfileResult BlockwiseCrossAttentionRunner::runAndProfileSkeleton(const DeviceAttentionBuffers& buffers) const {
+    // One block handles one query tile. Block size currently matches
+    // queryTileRows so each thread maps to one query row.
     dim3 block(config_.queryTileRows);
     dim3 grid((config_.queryLen + config_.queryTileRows - 1) / config_.queryTileRows);
+
+    // Shared memory holds one K tile and one V tile at the same time.
     size_t sharedBytes =
         static_cast<size_t>(config_.keyTileCols) * (config_.headDim + config_.valueDim) * sizeof(float);
 
@@ -131,6 +159,7 @@ ProfileResult BlockwiseCrossAttentionRunner::runAndProfileSkeleton(const DeviceA
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
 
+    // Skeleton only reports time for now.
     ProfileResult result;
     result.avgKernelMs = totalMs / config_.profileRepeats;
     result.estimatedGflops = 0.0;
