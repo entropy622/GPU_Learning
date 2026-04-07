@@ -36,12 +36,22 @@ __global__ void blockwiseAttentionSkeletonKernel(const float* q,
         return;
     }
 
-    // Shared memory layout for the current K/V tiles:
+    // Shared memory layout for the current tile:
     // keyTile   = [keyTileCols][headDim]
     // valueTile = [keyTileCols][valueDim]
+    // scoreTile = [blockDim.x][keyTileCols]
+    //
+    // scoreTile gives each thread its own tile-local score buffer. This avoids
+    // hardcoding a fixed local array size such as tileScores[16].
     extern __shared__ float shared[];
     float* keyTile = shared;
     float* valueTile = keyTile + keyTileCols * headDim;
+    float* scoreTile = valueTile + keyTileCols * valueDim;
+    float* localScores = scoreTile + threadIdx.x * keyTileCols;
+
+    float runningMax = -FLT_MAX;
+    float runningSum = 0.0f;
+
 
     // Scan the full K/V sequence tile by tile.
     for (int keyTileStart = 0; keyTileStart < keyLen; keyTileStart += keyTileCols) {
@@ -76,7 +86,6 @@ __global__ void blockwiseAttentionSkeletonKernel(const float* q,
         //
         // This is not real attention output. It is only a deterministic
         // placeholder while we build the blockwise algorithm step by step.
-        float tileScores[16];
         float tileMax = -FLT_MAX;
 
         for (int tileCol = 0; tileCol < tileCols; tileCol++)
@@ -86,9 +95,19 @@ __global__ void blockwiseAttentionSkeletonKernel(const float* q,
                 score += q[queryIdx * headDim + dim] * keyTile[tileCol * headDim + dim];
             }
             score *= scale;
-            tileScores[tileCol] = score;
+            localScores[tileCol] = score;
             tileMax = fmaxf(tileMax, score);
         }
+
+        float newMax = fmaxf(runningMax, tileMax);
+        float tileExpSum = 0.0f;
+        for (int tileCol = 0; tileCol < tileCols; ++tileCol) {
+            tileExpSum += exp(localScores[tileCol] - newMax);
+        }
+        runningSum = runningSum * exp(runningMax - newMax) + tileExpSum;
+        runningMax = newMax;
+
+
         
 
         // Temporary writeback so the skeleton has a stable output buffer.
@@ -118,9 +137,13 @@ ProfileResult BlockwiseCrossAttentionRunner::runAndProfileSkeleton(const DeviceA
     dim3 block(config_.queryTileRows);
     dim3 grid((config_.queryLen + config_.queryTileRows - 1) / config_.queryTileRows);
 
-    // Shared memory holds one K tile and one V tile at the same time.
+    // Shared memory holds:
+    // - one K tile
+    // - one V tile
+    // - one score buffer per thread for the current tile
     size_t sharedBytes =
-        static_cast<size_t>(config_.keyTileCols) * (config_.headDim + config_.valueDim) * sizeof(float);
+        static_cast<size_t>(config_.keyTileCols) *
+        (config_.headDim + config_.valueDim + config_.queryTileRows) * sizeof(float);
 
     cudaEvent_t start = nullptr;
     cudaEvent_t stop = nullptr;
