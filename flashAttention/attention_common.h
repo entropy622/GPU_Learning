@@ -4,13 +4,13 @@
 #include <vector>
 
 struct AttentionConfig {
-    int queryLen = 64;
-    int keyLen = 64;
+    int queryLen = 1024;
+    int keyLen = 1024;
     int headDim = 64;
     int valueDim = 64;
-    int threadsPerBlock = 128;
-    int profileRepeats = 50;
-    int queryTileRows = 16;
+    int threadsPerBlock = 8;
+    int profileRepeats = 20;
+    int queryTileRows = 32;
     int keyTileCols = 16;
 
     float scale() const {

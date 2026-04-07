@@ -6,60 +6,158 @@
 
 #include <iomanip>
 #include <iostream>
+#include <string>
+#include <vector>
 
-class CrossAttentionDemoApp {
-public:
-    explicit CrossAttentionDemoApp(AttentionConfig config)
-        : config_(config),
-          tensors_(config),
-          cpuReference_(config),
-          gpuRunner_(config),
-          blockwiseSkeleton_(config) {}
+namespace {
 
-    int run() {
-        TensorInitializer::fillInputs(tensors_);
-        cpuReference_.run(tensors_, tensors_.cpuOut);
+bool canRunNaive(const AttentionConfig& config) {
+    int maxSharedBytes = 0;
+    checkCuda(cudaDeviceGetAttribute(&maxSharedBytes, cudaDevAttrMaxSharedMemoryPerBlock, 0),
+              "query max shared memory per block");
+    size_t naiveSharedBytes = static_cast<size_t>(config.threadsPerBlock) * config.keyLen * sizeof(float);
+    return naiveSharedBytes <= static_cast<size_t>(maxSharedBytes);
+}
 
-        DeviceAttentionBuffers deviceBuffers(config_);
-        deviceBuffers.copyInputsFromHost(tensors_);
+int repeatsForLength(int seqLen) {
+    if (seqLen <= 1024) {
+        return 20;
+    }
+    if (seqLen <= 2048) {
+        return 10;
+    }
+    if (seqLen <= 4096) {
+        return 4;
+    }
+    return 2;
+}
 
-        ProfileResult naiveProfile = gpuRunner_.runAndProfile(deviceBuffers);
-        deviceBuffers.copyOutputToHost(tensors_.gpuOut);
+bool envFlagEnabled(const char* name) {
+    const char* value = std::getenv(name);
+    if (value == nullptr) {
+        return false;
+    }
+    std::string text(value);
+    return text == "1" || text == "true" || text == "TRUE" || text == "on" || text == "ON";
+}
 
-        bool naiveOk = AttentionValidator::compare(tensors_.cpuOut, tensors_.gpuOut);
-        std::cout << "Naive CUDA result\n";
-        AttentionReporter::printPreview(tensors_.gpuOut, config_);
-        AttentionReporter::printSummary(config_, naiveProfile, naiveOk);
+int envIntOrDefault(const char* name, int defaultValue) {
+    const char* value = std::getenv(name);
+    if (value == nullptr) {
+        return defaultValue;
+    }
+    return std::atoi(value);
+}
 
-        ProfileResult blockwiseProfile = blockwiseSkeleton_.runAndProfileSkeleton(deviceBuffers);
-        deviceBuffers.copyOutputToHost(tensors_.gpuOut);
-        bool blockwiseOk = AttentionValidator::compare(tensors_.cpuOut, tensors_.gpuOut);
+int runSingleBenchmark(AttentionConfig config, bool validateAgainstCpu) {
+    AttentionTensors tensors(config);
+    TensorInitializer::fillInputs(tensors);
 
-        std::cout << "Blockwise result\n";
-        AttentionReporter::printPreview(tensors_.gpuOut, config_);
-        std::cout << "Blockwise summary:\n";
-        std::cout << "  queryTileRows=" << config_.queryTileRows
-                  << " keyTileCols=" << config_.keyTileCols << "\n";
-        std::cout << "  correctness=" << (blockwiseOk ? "PASS" : "FAIL") << "\n";
-        std::cout << "  avg kernel time=" << std::fixed << std::setprecision(4)
-                  << blockwiseProfile.avgKernelMs << " ms\n";
-        if (blockwiseProfile.avgKernelMs > 0.0f) {
-            std::cout << "  speedup vs naive=" << std::setprecision(2)
-                      << naiveProfile.avgKernelMs / blockwiseProfile.avgKernelMs << "x\n";
-        }
-        return (naiveOk && blockwiseOk) ? 0 : 1;
+    if (validateAgainstCpu) {
+        CpuCrossAttention cpuReference(config);
+        cpuReference.run(tensors, tensors.cpuOut);
     }
 
-private:
-    AttentionConfig config_;
-    AttentionTensors tensors_;
-    CpuCrossAttention cpuReference_;
-    CudaCrossAttentionRunner gpuRunner_;
-    BlockwiseCrossAttentionRunner blockwiseSkeleton_;
-};
+    DeviceAttentionBuffers deviceBuffers(config);
+    deviceBuffers.copyInputsFromHost(tensors);
+
+    bool allOk = true;
+    bool ranNaive = false;
+    ProfileResult naiveProfile;
+    if (canRunNaive(config)) {
+        CudaCrossAttentionRunner naiveRunner(config);
+        naiveProfile = naiveRunner.runAndProfile(deviceBuffers);
+        deviceBuffers.copyOutputToHost(tensors.gpuOut);
+        ranNaive = true;
+
+        bool naiveOk = validateAgainstCpu ? AttentionValidator::compare(tensors.cpuOut, tensors.gpuOut) : true;
+        allOk = allOk && naiveOk;
+
+        std::cout << "Naive CUDA result\n";
+        if (validateAgainstCpu) {
+            AttentionReporter::printPreview(tensors.gpuOut, config);
+        }
+        AttentionReporter::printSummary(config, naiveProfile, naiveOk);
+    } else {
+        std::cout << "Naive CUDA result\n";
+        std::cout << "  skipped: dynamic shared memory requirement exceeds device limit\n";
+    }
+
+    BlockwiseCrossAttentionRunner blockwiseRunner(config);
+    ProfileResult blockwiseProfile = blockwiseRunner.runAndProfileSkeleton(deviceBuffers);
+    deviceBuffers.copyOutputToHost(tensors.gpuOut);
+    bool blockwiseOk = validateAgainstCpu ? AttentionValidator::compare(tensors.cpuOut, tensors.gpuOut) : true;
+    allOk = allOk && blockwiseOk;
+
+    std::cout << "Blockwise result\n";
+    if (validateAgainstCpu) {
+        AttentionReporter::printPreview(tensors.gpuOut, config);
+    }
+    std::cout << "Blockwise summary:\n";
+    std::cout << "  queryLen=" << config.queryLen
+              << " keyLen=" << config.keyLen
+              << " queryTileRows=" << config.queryTileRows
+              << " keyTileCols=" << config.keyTileCols << "\n";
+    std::cout << "  correctness=" << (blockwiseOk ? "PASS" : "SKIPPED/FAIL") << "\n";
+    std::cout << "  avg kernel time=" << std::fixed << std::setprecision(4)
+              << blockwiseProfile.avgKernelMs << " ms\n";
+    if (ranNaive && blockwiseProfile.avgKernelMs > 0.0f) {
+        std::cout << "  speedup vs naive=" << std::setprecision(2)
+                  << naiveProfile.avgKernelMs / blockwiseProfile.avgKernelMs << "x\n";
+    }
+
+    return allOk ? 0 : 1;
+}
+
+int runProfileOnly(AttentionConfig config) {
+    AttentionTensors tensors(config);
+    TensorInitializer::fillInputs(tensors);
+
+    DeviceAttentionBuffers deviceBuffers(config);
+    deviceBuffers.copyInputsFromHost(tensors);
+
+    BlockwiseCrossAttentionRunner blockwiseRunner(config);
+    ProfileResult blockwiseProfile = blockwiseRunner.runAndProfileSkeleton(deviceBuffers);
+
+    std::cout << "Profile-only blockwise run\n";
+    std::cout << "  queryLen=" << config.queryLen
+              << " keyLen=" << config.keyLen
+              << " queryTileRows=" << config.queryTileRows
+              << " keyTileCols=" << config.keyTileCols << "\n";
+    std::cout << "  avg kernel time=" << std::fixed << std::setprecision(4)
+              << blockwiseProfile.avgKernelMs << " ms\n";
+    return 0;
+}
+
+}  // namespace
 
 int main() {
-    AttentionConfig config;
-    CrossAttentionDemoApp app(config);
-    return app.run();
+    if (envFlagEnabled("FLASH_PROFILE_ONLY")) {
+        AttentionConfig config;
+        config.queryLen = envIntOrDefault("FLASH_QUERY_LEN", 8192);
+        config.keyLen = envIntOrDefault("FLASH_KEY_LEN", config.queryLen);
+        config.profileRepeats = envIntOrDefault("FLASH_REPEATS", repeatsForLength(config.queryLen));
+        config.queryTileRows = envIntOrDefault("FLASH_QUERY_TILE_ROWS", config.queryTileRows);
+        config.keyTileCols = envIntOrDefault("FLASH_KEY_TILE_COLS", config.keyTileCols);
+        return runProfileOnly(config);
+    }
+
+    std::vector<int> sequenceLengths = {1024, 2048, 4096, 8192};
+    int exitCode = 0;
+
+    for (size_t i = 0; i < sequenceLengths.size(); ++i) {
+        AttentionConfig config;
+        config.queryLen = sequenceLengths[i];
+        config.keyLen = sequenceLengths[i];
+        config.profileRepeats = repeatsForLength(sequenceLengths[i]);
+
+        std::cout << "\n=== Benchmark N=" << sequenceLengths[i] << " ===\n";
+        bool validateAgainstCpu = (sequenceLengths[i] <= 1024);
+        int rc = runSingleBenchmark(config, validateAgainstCpu);
+        if (rc != 0) {
+            exitCode = rc;
+        }
+    }
+
+    return exitCode;
 }
