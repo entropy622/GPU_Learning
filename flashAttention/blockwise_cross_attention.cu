@@ -76,14 +76,20 @@ __global__ void blockwiseAttentionSkeletonKernel(const float* q,
         //
         // This is not real attention output. It is only a deterministic
         // placeholder while we build the blockwise algorithm step by step.
-        float debugAccumulator = 0.0f;
-        for (int tileCol = 0; tileCol < tileCols; ++tileCol) {
+        float tileScores[16];
+        float tileMax = -FLT_MAX;
+
+        for (int tileCol = 0; tileCol < tileCols; tileCol++)
+        {
             float score = 0.0f;
-            for (int dim = 0; dim < headDim; ++dim) {
+            for (int dim = 0; dim < headDim; dim++) {
                 score += q[queryIdx * headDim + dim] * keyTile[tileCol * headDim + dim];
             }
-            debugAccumulator += score * scale;
+            score *= scale;
+            tileScores[tileCol] = score;
+            tileMax = fmaxf(tileMax, score);
         }
+        
 
         // Temporary writeback so the skeleton has a stable output buffer.
         if (keyTileStart == 0) {
@@ -91,9 +97,10 @@ __global__ void blockwiseAttentionSkeletonKernel(const float* q,
                 out[queryIdx * valueDim + dim] = 0.0f;
             }
             if (valueDim > 0) {
-                out[queryIdx * valueDim] = debugAccumulator;
+                out[queryIdx * valueDim] = tileMax;
             }
         }
+
 
         // Wait until every thread is done reading the current tile before
         // the next iteration overwrites shared memory.
