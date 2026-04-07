@@ -52,6 +52,10 @@ __global__ void blockwiseAttentionSkeletonKernel(const float* q,
     float runningMax = -FLT_MAX;
     float runningSum = 0.0f;
 
+    for (int dim = 0; dim < valueDim; ++dim) {
+        out[queryIdx * valueDim + dim] = 0.0f;
+    }
+
 
     // Scan the full K/V sequence tile by tile.
     for (int keyTileStart = 0; keyTileStart < keyLen; keyTileStart += keyTileCols) {
@@ -100,31 +104,38 @@ __global__ void blockwiseAttentionSkeletonKernel(const float* q,
         }
 
         float newMax = fmaxf(runningMax, tileMax);
+        float oldScale = (runningSum == 0.0f) ? 0.0f : (runningSum * exp(runningMax - newMax));
         float tileExpSum = 0.0f;
         for (int tileCol = 0; tileCol < tileCols; ++tileCol) {
-            tileExpSum += exp(localScores[tileCol] - newMax);
+            localScores[tileCol] = exp(localScores[tileCol] - newMax);
+            tileExpSum += localScores[tileCol];
         }
         runningSum = runningSum * exp(runningMax - newMax) + tileExpSum;
         runningMax = newMax;
 
-
-        
-
-        // Temporary writeback so the skeleton has a stable output buffer.
-        if (keyTileStart == 0) {
-            for (int dim = 0; dim < valueDim; ++dim) {
-                out[queryIdx * valueDim + dim] = 0.0f;
+        for (int dim = 0; dim < valueDim; ++dim) {
+            float tileWeightedSum = 0.0f;
+            for (int tileCol = 0; tileCol < tileCols; ++tileCol) {
+                tileWeightedSum += localScores[tileCol] * valueTile[tileCol * valueDim + dim];
             }
-            if (valueDim > 0) {
-                out[queryIdx * valueDim] = tileMax;
-            }
+
+            out[queryIdx * valueDim + dim] =
+                out[queryIdx * valueDim + dim] * oldScale + tileWeightedSum;
         }
+
 
 
         // Wait until every thread is done reading the current tile before
         // the next iteration overwrites shared memory.
         __syncthreads();
     }
+
+    if (runningSum > 0.0f) {
+        for (int dim = 0; dim < valueDim; ++dim) {
+            out[queryIdx * valueDim + dim] /= runningSum;
+        }
+    }   
+
 }
 
 }  // namespace
