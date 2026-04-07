@@ -32,18 +32,15 @@ __global__ void blockwiseAttentionSkeletonKernel(const float* q,
         // TODO(step 1): cooperatively load a K tile and a V tile into shared memory.
         // The final FlashAttention-style implementation will have all threads in the
         // block collaborate on these loads instead of giving each thread a whole row.
-        if (localQueryRow == 0) {
-            for (int tileCol = 0; tileCol < tileCols; ++tileCol) {
-                for (int dim = 0; dim < headDim; ++dim) {
-                    keyTile[tileCol * headDim + dim] =
-                        k[(keyTileStart + tileCol) * headDim + dim];
-                }
-                for (int dim = 0; dim < valueDim; ++dim) {
-                    valueTile[tileCol * valueDim + dim] =
-                        v[(keyTileStart + tileCol) * valueDim + dim];
-                }
-            }
+        for (int dim = 0; dim < headDim; ++dim) {
+            keyTile[localQueryRow * headDim + dim] =
+                k[(keyTileStart + localQueryRow) * headDim + dim];
         }
+        for (int dim = 0; dim < valueDim; ++dim) {
+            valueTile[localQueryRow * valueDim + dim] =
+                v[(keyTileStart + localQueryRow) * valueDim + dim];
+        }
+
 
         __syncthreads();
 
