@@ -28,6 +28,7 @@ openmp_lab::Matrix matmul_parallel_outer(const openmp_lab::Matrix& a,
   // TODO(student):
   // Parallelize the outer i-loop.
   // Reasoning question: why is writing c(i, j) safe here without atomics?
+  #pragma omp parallel for
   for (int i = 0; i < a.rows(); ++i) {
     for (int j = 0; j < b.cols(); ++j) {
       double sum = 0.0;
@@ -47,6 +48,7 @@ openmp_lab::Matrix matmul_parallel_collapse(const openmp_lab::Matrix& a,
 
   // TODO(student):
   // Add collapse(2) to parallelize the 2D iteration space over (i, j).
+  #pragma omp parallel for collapse(2) schedule(static)
   for (int i = 0; i < a.rows(); ++i) {
     for (int j = 0; j < b.cols(); ++j) {
       double sum = 0.0;

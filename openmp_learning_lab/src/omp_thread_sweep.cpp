@@ -17,6 +17,7 @@ double parallel_sum(std::size_t n, int thread_count) {
   // TODO(student):
   // Add a parallel for with reduction on sum.
   // This is the core pattern for safe parallel accumulation.
+  #pragma omp parallel for reduction(+:sum)
   for (int i = 0; i < static_cast<int>(n); ++i) {
     sum += 1.0 / (1.0 + i);
   }

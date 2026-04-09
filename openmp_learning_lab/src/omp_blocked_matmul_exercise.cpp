@@ -50,6 +50,7 @@ openmp_lab::Matrix matmul_blocked_exercise(const openmp_lab::Matrix& a,
 
   // Suggested direction:
   // #pragma omp parallel for collapse(2) schedule(static)
+  #pragma omp parallel for collapse(2) schedule(static)
   for (int ii = 0; ii < a.rows(); ii += block_size) {
     for (int jj = 0; jj < b_t.rows(); jj += block_size) {
       for (int i = ii; i < std::min(ii + block_size, a.rows()); ++i) {
@@ -60,9 +61,12 @@ openmp_lab::Matrix matmul_blocked_exercise(const openmp_lab::Matrix& a,
           // Replace this inner loop with blocked traversal over k:
           // for (int kk = 0; kk < a.cols(); kk += block_size) { ... }
           // and then accumulate over the local tile.
-          for (int k = 0; k < a.cols(); ++k) {
-            sum += a(i, k) * b_t(j, k);
+          for (int kk = 0; kk < a.cols(); kk += block_size) {
+            for (int k = kk; k < std::min(kk + block_size, a.cols()); ++k) {
+              sum += a(i, k) * b_t(j, k);
+            }
           }
+
 
           c(i, j) = sum;
         }
