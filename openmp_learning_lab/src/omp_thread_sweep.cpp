@@ -13,7 +13,10 @@ double parallel_sum(std::size_t n, int thread_count) {
 
   double sum = 0.0;
   const auto start = std::chrono::steady_clock::now();
-#pragma omp parallel for reduction(+ : sum)
+
+  // TODO(student):
+  // Add a parallel for with reduction on sum.
+  // This is the core pattern for safe parallel accumulation.
   for (int i = 0; i < static_cast<int>(n); ++i) {
     sum += 1.0 / (1.0 + i);
   }
@@ -39,6 +42,7 @@ int main() {
 
   std::cout << "Test problem size n=" << n << "\n";
   std::cout << "Question: more threads are not always better. Measure, do not assume.\n";
+  std::cout << "Exercise: fill the OpenMP reduction TODO before trusting these timings.\n";
 
   double baseline_ms = 0.0;
   for (const int threads : thread_candidates) {

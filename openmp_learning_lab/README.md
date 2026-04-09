@@ -11,6 +11,15 @@
 - 如何计算加速比？
 - 如何把 OpenMP 用在矩阵乘法和分块矩阵乘法上？
 
+## 项目风格
+
+这个项目现在按“课程大作业”风格组织：
+
+- `omp_basics.cpp`、`omp_thread_sweep.cpp`、`omp_matrix_mul.cpp`、`omp_blocked_matmul_exercise.cpp`
+  都保留了关键 TODO。
+- 你需要先补代码，再编译，再观察正确性和速度。
+- 学习顺序强调“先修正确性，再谈加速比”。
+
 ## OpenMP 是什么
 
 OpenMP 是共享内存并行编程模型。最常见的使用方式是：
@@ -243,6 +252,14 @@ OMP_NUM_THREADS=8 ./omp_blocked_matmul_exercise 256 32
 - `reduction`
 - 为什么会 data race
 
+你要补的关键空白：
+
+- 创建 parallel region
+- 给 `std::cout` 加合适的保护
+- 给计数循环补 `atomic`
+- 给求和循环补 `reduction`
+- 给不均匀工作循环补 `schedule(static, 2)`
+
 ### `omp_thread_sweep.cpp`
 
 学这些：
@@ -250,6 +267,10 @@ OMP_NUM_THREADS=8 ./omp_blocked_matmul_exercise 256 32
 - 线程数调优必须靠测量
 - 加速曲线通常不是线性的
 - 线程太多可能反而退化
+
+你要补的关键空白：
+
+- 给求和循环补 `parallel for reduction`
 
 ### `omp_matrix_mul.cpp`
 
@@ -259,6 +280,11 @@ OMP_NUM_THREADS=8 ./omp_blocked_matmul_exercise 256 32
 - `collapse(2)` 在二维循环上的意义
 - 正确性验证和加速比计算
 
+你要补的关键空白：
+
+- 外层 `i` 循环并行
+- `(i, j)` 二维空间的 `collapse(2)` 并行
+
 ### `omp_blocked_matmul_exercise.cpp`
 
 你要亲手完成：
@@ -267,6 +293,24 @@ OMP_NUM_THREADS=8 ./omp_blocked_matmul_exercise 256 32
 - 在正确位置加 OpenMP pragma
 - 把朴素乘法改成真正的 blocked matmul
 - 比较 block size 和线程数的影响
+
+## 建议提交顺序
+
+像做课程作业一样推进：
+
+1. 先只完成 `omp_basics.cpp`
+2. 证明你能解释 data race、atomic、reduction
+3. 再完成 `omp_thread_sweep.cpp`
+4. 再完成 `omp_matrix_mul.cpp`
+5. 最后做 `omp_blocked_matmul_exercise.cpp`
+
+每完成一步，都记录：
+
+- 你加了哪条 pragma
+- 为什么这层循环适合并行
+- 有没有共享写冲突
+- 正确性如何验证
+- 加速比是多少
 
 ## 你应该能回答的面试问题
 

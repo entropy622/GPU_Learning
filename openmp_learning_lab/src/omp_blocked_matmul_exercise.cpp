@@ -94,6 +94,7 @@ int main(int argc, char** argv) {
   std::cout << "Blocked matrix multiply exercise\n";
   std::cout << "n=" << n << ", block_size=" << block_size << ", max_threads=" << omp_get_max_threads()
             << "\n";
+  std::cout << "This file intentionally leaves the key optimization step to you.\n";
 
   auto a = openmp_lab::make_matrix(n, n, 7);
   auto b = openmp_lab::make_matrix(n, n, 9);

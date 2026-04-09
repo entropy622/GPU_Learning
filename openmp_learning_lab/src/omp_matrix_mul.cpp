@@ -25,7 +25,9 @@ openmp_lab::Matrix matmul_parallel_outer(const openmp_lab::Matrix& a,
                                          const openmp_lab::Matrix& b) {
   openmp_lab::Matrix c(a.rows(), b.cols());
 
-#pragma omp parallel for schedule(static)
+  // TODO(student):
+  // Parallelize the outer i-loop.
+  // Reasoning question: why is writing c(i, j) safe here without atomics?
   for (int i = 0; i < a.rows(); ++i) {
     for (int j = 0; j < b.cols(); ++j) {
       double sum = 0.0;
@@ -43,7 +45,8 @@ openmp_lab::Matrix matmul_parallel_collapse(const openmp_lab::Matrix& a,
                                             const openmp_lab::Matrix& b) {
   openmp_lab::Matrix c(a.rows(), b.cols());
 
-#pragma omp parallel for collapse(2) schedule(static)
+  // TODO(student):
+  // Add collapse(2) to parallelize the 2D iteration space over (i, j).
   for (int i = 0; i < a.rows(); ++i) {
     for (int j = 0; j < b.cols(); ++j) {
       double sum = 0.0;
@@ -75,6 +78,7 @@ int main(int argc, char** argv) {
   const int n = (argc > 1) ? std::atoi(argv[1]) : 256;
   std::cout << "Matrix size: " << n << " x " << n << "\n";
   std::cout << "Max threads: " << omp_get_max_threads() << "\n";
+  std::cout << "Exercise file: fill the OpenMP pragmas before evaluating speedup.\n";
 
   auto a = openmp_lab::make_matrix(n, n, 42);
   auto b = openmp_lab::make_matrix(n, n, 1337);
@@ -98,6 +102,7 @@ int main(int argc, char** argv) {
 
   std::cout << "\nQuestion to answer after running:\n"
                "- Why is parallelizing the outer loop usually safe here?\n"
-               "- Why would parallelizing the innermost reduction loop be harder?\n";
+               "- Why would parallelizing the innermost reduction loop be harder?\n"
+               "- When does collapse(2) help load balance?\n";
   return 0;
 }
